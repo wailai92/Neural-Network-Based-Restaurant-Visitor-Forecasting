@@ -1,4 +1,22 @@
 # Neural-Network-Based-Restaurant-Visitor-Forecasting
+project description:
+
+    This project explores a neural network-based approach to forecast restaurant visitor counts using historical reservation and calendar data. 
+    The goal is to build a predictive model that leverages real-world features such as reservation volumes, reservation timing, store metadata, and holiday indicators to produce accurate visitor estimates.
+    The core of the project involves:
+    
+    Data Integration from multiple sources including Air and HPG reservation platforms
+    
+    Feature Engineering using reservation statistics, geographic info, and temporal attributes
+    
+    Model Training using a Multi-Layer Perceptron (MLP) with RMSLE as the primary loss metric
+    
+    Optimization Techniques such as log1p transformation, batch size adjustment, and learning rate tuning
+    
+    Loss Visualization to compare the effects of different optimizations across training curves
+    
+    Through systematic experimentation, the model achieves a stable RMSLE of approximately 0.223, indicating reasonable accuracy in predicting restaurant traffic patterns under various conditions.
+
 csv file description:
 
     air_visit_data.csv	          
