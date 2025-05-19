@@ -242,6 +242,10 @@ history = model.fit(
 
 test_loss, test_rmsle = model.evaluate(X_test, y_test_log, batch_size=512, verbose=1)
 
+with open("loss_log1p_batch512_Adamlr001_relu.txt", "w") as f:
+    for epoch_loss in history.history['loss']:
+        f.write(f"{epoch_loss}\n")
+
 print(f"測試集 Loss (RMSLE, log): {test_loss:.4f}")
 print(f"測試集 RMSLE (metric, log): {test_rmsle:.4f}")
 
