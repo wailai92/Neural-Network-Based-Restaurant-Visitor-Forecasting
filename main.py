@@ -8,6 +8,11 @@ from tensorflow.keras.layers import Dense
 import tensorflow.keras.backend as tkb 
 import numpy as np
 from tensorflow.keras.optimizers import Adam
+from sklearn.preprocessing import StandardScaler
+from tensorflow.keras.layers import Dense, Dropout, BatchNormalization
+from tensorflow.keras.callbacks import EarlyStopping, ReduceLROnPlateau
+from tensorflow.keras.optimizers.schedules import CosineDecay
+
 
 def rmsle(y_true, y_pred):
     y_true = tkb.cast(y_true, 'float32')  
@@ -32,7 +37,13 @@ def split_train_test(train, test):
     'hpg_reserve_visitors',
     'hpg_reserve_count',
     'hpg_reserve_days_diff_mean',
-    'holiday_flg'
+    'holiday_flg',
+    'store_mean_visitors',
+    'dow_store_mean_visitors',
+    'genre_mean_visitors',
+    'rolling_mean_3',
+    'is_weekend',
+    'consecutive_holiday'
     ]
 
     # 切出訓練資料
@@ -199,6 +210,57 @@ test.drop('calendar_date', axis=1, inplace=True)
 #print(train[['visit_date', 'holiday_flg']].head())
 
 
+
+# 特徵工程：加入統計與時間特徵（只使用2016資料計算）
+
+# is_weekend 特徵
+train['is_weekend'] = train['day_of_week'].isin([5, 6]).astype(int)
+test['is_weekend'] = test['day_of_week'].isin([5, 6]).astype(int)
+
+# genre_mean_visitors
+genre_mean = train.groupby('air_genre_name')['visitors'].mean().reset_index()
+genre_mean.columns = ['air_genre_name', 'genre_mean_visitors']
+train = pd.merge(train, genre_mean, on='air_genre_name', how='left')
+test = pd.merge(test, genre_mean, on='air_genre_name', how='left')
+
+# store_mean_visitors
+store_mean = train.groupby('air_store_id')['visitors'].mean().reset_index()
+store_mean.columns = ['air_store_id', 'store_mean_visitors']
+train = pd.merge(train, store_mean, on='air_store_id', how='left')
+test = pd.merge(test, store_mean, on='air_store_id', how='left')
+
+# dow_store_mean_visitors
+dow_store_mean = train.groupby(['air_store_id', 'day_of_week'])['visitors'].mean().reset_index()
+dow_store_mean.columns = ['air_store_id', 'day_of_week', 'dow_store_mean_visitors']
+train = pd.merge(train, dow_store_mean, on=['air_store_id', 'day_of_week'], how='left')
+test = pd.merge(test, dow_store_mean, on=['air_store_id', 'day_of_week'], how='left')
+
+# rolling_mean_3：過去三天的平均（shift+rolling）
+train = train.sort_values(by=['air_store_id', 'visit_date'])
+train['rolling_mean_3'] = train.groupby('air_store_id')['visitors'].transform(lambda x: x.shift(1).rolling(window=3).mean())
+train['rolling_mean_3'].fillna(0, inplace=True)
+
+# 對 test 使用 train 的最後3天來模擬 rolling
+rolling_test = train.groupby('air_store_id').tail(3).groupby('air_store_id')['visitors'].mean().reset_index()
+rolling_test.columns = ['air_store_id', 'rolling_mean_3']
+test = pd.merge(test, rolling_test, on='air_store_id', how='left')
+test['rolling_mean_3'].fillna(0, inplace=True)
+
+# consecutive_holiday 特徵
+date_info['holiday_flg'] = date_info['holiday_flg'].astype(int)
+date_info['consecutive_holiday'] = (
+    date_info['holiday_flg'].shift(1, fill_value=0) +
+    date_info['holiday_flg'] +
+    date_info['holiday_flg'].shift(-1, fill_value=0)
+).ge(2).astype(int)
+
+# 合併進來
+train = pd.merge(train, date_info[['calendar_date', 'consecutive_holiday']], how='left', left_on='visit_date', right_on='calendar_date')
+train.drop('calendar_date', axis=1, inplace=True)
+
+test = pd.merge(test, date_info[['calendar_date', 'consecutive_holiday']], how='left', left_on='visit_date', right_on='calendar_date')
+test.drop('calendar_date', axis=1, inplace=True)
+
 label_transform()
 #print(train[['air_genre_name', 'air_area_name']].head())
 
@@ -208,6 +270,10 @@ X_train, y_train, X_test, y_test = split_train_test(train, test)
 y_train_log = np.log1p(y_train)
 y_test_log = np.log1p(y_test)
 
+
+scaler = StandardScaler()
+X_train = scaler.fit_transform(X_train)
+X_test = scaler.transform(X_test)
 #print(y_train_log.head())
 #a = input()
 #print(f"X_train shape: {X_train.shape}")
@@ -215,17 +281,43 @@ y_test_log = np.log1p(y_test)
 #print(f"X_test shape: {X_test.shape}")
 #print(f"y_test shape: {y_test.shape}")
 
+initial_lr = 5e-4         # 初始學習率
+decay_steps = 250         # 多少步內完成一個完整餘弦週期
+alpha = 3e-5          # 最小學習率
+
+lr_schedule = CosineDecay(
+    initial_learning_rate=initial_lr,
+    decay_steps=decay_steps,
+    alpha=alpha / initial_lr  # alpha 是最終學習率比例 (非絕對值)
+)
+
+early_stop = EarlyStopping(
+    monitor='val_loss',
+    patience=20,
+    restore_best_weights=True,
+    verbose=1
+)
+
 model = Sequential([
-    Dense(64, activation='relu', input_shape=(X_train.shape[1],)),
+    Dense(128, activation='relu', input_shape=(X_train.shape[1],)),
+    BatchNormalization(),
+    Dropout(0.2),
+    
+    Dense(64, activation='relu'),
+    BatchNormalization(),
+    Dropout(0.2),
+    
     Dense(32, activation='relu'),
-    Dense(1)  #沒有 activation
+    BatchNormalization(),
+    
+    Dense(1)  # 最終輸出，無 activation
 ])
 #model.summary()
 
 #a = input()
 
 model.compile(
-    optimizer=Adam(learning_rate=0.0001),
+    optimizer=Adam(learning_rate=lr_schedule),
     loss=rmsle,
     metrics=[rmsle]
 )
@@ -234,17 +326,18 @@ model.compile(
 history = model.fit(
     X_train,
     y_train_log,
-    epochs=100,
+    epochs=250,
     batch_size=512,
     validation_split=0.2,
+    callbacks=[early_stop],
     verbose=1
 )
 
 test_loss, test_rmsle = model.evaluate(X_test, y_test_log, batch_size=512, verbose=1)
 
-with open("loss_log1p_batch512_Adamlr001_relu.txt", "w") as f:
-    for epoch_loss in history.history['loss']:
-        f.write(f"{epoch_loss}\n")
+##with open("loss_log1p_batch512_Adamlr001_relu.txt", "w") as f:
+    ##for epoch_loss in history.history['loss']:
+        ##f.write(f"{epoch_loss}\n")
 
 print(f"測試集 Loss (RMSLE, log): {test_loss:.4f}")
 print(f"測試集 RMSLE (metric, log): {test_rmsle:.4f}")
